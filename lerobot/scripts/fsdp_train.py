@@ -125,11 +125,13 @@ def save_fsdp_checkpoint(model, optim, output_dir, step):
 
         logging.info(f"Checkpoint saved at {ckpt_path}")
 
-def train_step(model, batch, scaler, optimizer):
+def train_step(model, batch, scaler, cfg):
     """执行单个训练步骤"""
     # 前向传播
     with torch.amp.autocast("cuda", dtype=torch.bfloat16, cache_enabled=False):
         loss, output_dict = model(batch)
+    
+    loss = loss / cfg.gradient_accumulation_steps
     
     # 反向传播
     if scaler is not None:
@@ -142,20 +144,13 @@ def train_step(model, batch, scaler, optimizer):
     grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
     # torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
     
-    # 参数更新
-    if scaler is not None:
-        scaler.step(optimizer)
-        scaler.update()
-    else:
-        optimizer.step()
-    optimizer.zero_grad()
-    
     # 梯度平均，用于记录
     if dist.is_initialized():
         dist.all_reduce(grad_norm, op=dist.ReduceOp.SUM)
         grad_norm /= dist.get_world_size()
     
     return loss, grad_norm, output_dict
+
 
 @parser.wrap()
 def train(cfg: TrainPipelineConfig):
