@@ -1678,7 +1678,7 @@ class MultiDatasetforDistTraining(torch.utils.data.Dataset):
                 for i in range(len(vision['video'])):
                     vision["video"][i] = vision["video"][i].resize((112, 112))
                 
-                print(f"video length: {len(vision['video'])}")
+                # print(f"video length: {len(vision['video'])}")
             else:
                 if isinstance(item[key], list):
                     if len(item[key]) > 0:
