@@ -77,15 +77,6 @@ done
 
 # 检查必要参数
 if [[ -z "$JOB_NAME" ]]; then
-        *)
-            echo "未知参数: $1"
-            exit 1
-            ;;
-    esac
-done
-
-# 检查必要参数
-if [[ -z "$JOB_NAME" ]]; then
     echo "错误：必须指定 --job_name"
     exit 1
 fi
