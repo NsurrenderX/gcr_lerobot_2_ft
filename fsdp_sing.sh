@@ -101,6 +101,7 @@ torchrun \
     --master_addr=$MASTER_ADDR \
     --master_port=$MASTER_PORT \
     lerobot/scripts/fsdp_train.py \
+    --batch_size=2 \
     --policy.type="qwen" \
     --output_dir="$FIXED_OUTPUT_DIR" \
     --dataset.repo_id="whatever" \
