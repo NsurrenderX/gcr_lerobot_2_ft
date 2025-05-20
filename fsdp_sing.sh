@@ -11,6 +11,7 @@ SCHEDULER_DECAY_STEPS=30000
 SCHEDULER_PLATFORM_STEPS=1
 STEPS=3000000
 DATA_MIX="simpler_bridge"
+MAX_FRAME=75
 
 # 解析命令行参数
 while [[ $# -gt 0 ]]; do
@@ -63,6 +64,19 @@ while [[ $# -gt 0 ]]; do
             SCHEDULER_PLATFORM_STEPS="$2"
             shift 2
             ;;
+        --max_frame)
+            MAX_FRAME="$2"
+            shift 2
+            ;;
+        *)
+            echo "未知参数: $1"
+            exit 1
+            ;;
+    esac
+done
+
+# 检查必要参数
+if [[ -z "$JOB_NAME" ]]; then
         *)
             echo "未知参数: $1"
             exit 1
@@ -97,6 +111,7 @@ torchrun \
     --policy.scheduler_decay_steps=$SCHEDULER_DECAY_STEPS \
     --policy.scheduler_platform_steps=$SCHEDULER_PLATFORM_STEPS \
     --policy.optimizer_lr=$OPTIMIZER_LR \
+    --policy.max_frame=$MAX_FRAME \
     --policy.scheduler_decay_lr=$OPTIMIZER_DECAY_LR \
     --steps=$STEPS \
     --policy.train_main_layers=0 \
