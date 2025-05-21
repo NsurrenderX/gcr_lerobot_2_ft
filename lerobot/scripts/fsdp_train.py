@@ -341,7 +341,7 @@ def train(cfg: TrainPipelineConfig):
         "optim_s": AverageMeter("optim_s", ":.3f"),
     }
     train_tracker = MetricsTracker(
-        cfg.batch_size,
+        cfg.batch_size*world_size*cfg.gradient_accumulation_steps,
         dataset.num_frames,
         dataset.num_episodes,
         train_metrics,
