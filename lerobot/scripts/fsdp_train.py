@@ -253,6 +253,11 @@ def train(cfg: TrainPipelineConfig):
         weight_pt_path=None
     )
     
+    # 统计模型参数量
+    if rank == 0:
+        logger.info(f"Model parameters: {sum(p.numel() for p in policy.parameters())}")
+        logger.info(f"Action Expert parameters: {sum(p.numel() for p in policy.model.paligemma_with_expert.qwen_expert.parameters())}")
+    
     # 训练状态初始化
     if cfg.resume:
         if pts:
