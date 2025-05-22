@@ -371,9 +371,8 @@ class Qwen2RMSNorm(nn.Module):
 class KVCompress(nn.Module):
     def __init__(self, in_dim=4, out_dim=2, hiddem_dim=128):
         super().__init__()
-        self.expand = nn.Linear(in_dim*hiddem_dim, in_dim*hiddem_dim)
         self.linear = nn.Linear(in_dim*hiddem_dim, out_dim*hiddem_dim)
-        self.norm = Qwen2RMSNorm(hidden_size=in_dim*hiddem_dim)
+        self.norm = Qwen2RMSNorm(hidden_size=out_dim*hiddem_dim)
         self.activation = nn.SiLU()
         self.in_dim = in_dim
         self.out_dim = out_dim
@@ -386,20 +385,17 @@ class KVCompress(nn.Module):
             assert num_kv_heads == self.in_dim, f"num_kv_heads must be equal to in_dim, which is {self.in_dim}, but got {num_kv_heads}."
             x = x.reshape(-1, num_kv_heads*head_dim)  # 合并维度 -> [B*S, 4*128]
 
-            # 短路缓存
-            y = x.clone()
-            
-            # 线性变换特征维度
-            x = self.expand(x)          # -> [B*S, 2*128]
+            # 线性变换压缩特征维度
+            x = self.linear(x)          # -> [B*S, 2*128]
             x = self.norm(x)
             
             x = self.activation(x)
-            x = x + y
-            
-            x = self.linear(x)          # -> [B*S, 2*128]
             
             x = x.view(batch, self.out_dim, seq_len, head_dim)  # 恢复形状 -> [4, 868, 2048]
             new_t.append(x)
+        
+        # 激活函数
+        # x = self.activation(x)
 
         return new_t
 
@@ -548,10 +544,10 @@ class PaliGemmaWithExpertModel(PreTrainedModel):
                         
                         # kv attn
                         for layer_idx in range(self.num_layers):
-                            outputs.past_key_values.key_cache[layer_idx] = self.kv_compress[layer_idx](outputs.past_key_values.key_cache[layer_idx])[0]
-                            outputs.past_key_values.value_cache[layer_idx] = self.kv_compress[layer_idx](outputs.past_key_values.value_cache[layer_idx])[0]
-                        # outputs.past_key_values.key_cache = self.kv_compress(outputs.past_key_values.key_cache)
-                        # outputs.past_key_values.value_cache = self.kv_compress(outputs.past_key_values.value_cache)
+                            outputs.past_key_values.key_cache[layer_idx] = self.kv_compress[layer_idx](outputs.past_key_values.key_cache[layer_idx:layer_idx+1])[0]
+                            outputs.past_key_values.value_cache[layer_idx] = self.kv_compress[layer_idx](outputs.past_key_values.value_cache[layer_idx:layer_idx+1])[0]
+                        # outputs.past_key_values.key_cache = self.kv_compress[0](outputs.past_key_values.key_cache)
+                        # outputs.past_key_values.value_cache = self.kv_compress[0](outputs.past_key_values.value_cache)
                         past_key_values = outputs.past_key_values
                         # print(f"past_key_values: {past_key_values.key_cache[0].shape}")
                 elif i == 1:
@@ -597,14 +593,22 @@ class PaliGemmaWithExpertModel(PreTrainedModel):
             inputs_embeds=inputs_embeds
         )
         
+        if use_cache and past_key_values is None:
+            past_key_values = {}
+        
+        if use_cache and fill_kv_cache == False:
+            inputs_embeds[0] = None
+        
         models = [self.qwen25vl.model, self.qwen_expert.model]
         
         hidden_states = inputs_embeds
                 
         num_layers = self.num_layers
         for layer_idx in range(num_layers):
+            if use_cache and fill_kv_cache == False:
+                present_key_value = past_key_values[layer_idx]
             if layer_idx % 7 == 0:
-                hidden_states = checkpoint(
+                hidden_states, present_key_value = checkpoint(
                     self.cross_layer_forward,
                     models,
                     layer_idx,
@@ -619,10 +623,11 @@ class PaliGemmaWithExpertModel(PreTrainedModel):
                     cache_position_exp,
                     position_embeddings_vl,
                     position_embeddings_exp,
+                    present_key_value,
                     use_reentrant=False,
                 )
             else:
-                hidden_states = self.cross_layer_forward(models,
+                hidden_states, present_key_value = self.cross_layer_forward(models,
                                                         layer_idx,
                                                         inputs_embeds=hidden_states,
                                                         attention_mask=attention_mask,
@@ -634,12 +639,16 @@ class PaliGemmaWithExpertModel(PreTrainedModel):
                                                         cache_position_vl=cache_position_vl,
                                                         cache_position_exp=cache_position_exp,
                                                         position_embeddings_vl=position_embeddings_vl,
-                                                        position_embeddings_exp=position_embeddings_exp
+                                                        position_embeddings_exp=position_embeddings_exp,
+                                                        present_key_value=present_key_value
                                                         )
+            if use_cache and fill_kv_cache:
+                past_key_values[layer_idx] = present_key_value
         hidden_state_vl, hidden_state_exp = hidden_states
-        hidden_state_exp = self.qwen_expert.model.norm(hidden_state_exp)
+        if hidden_state_exp is not None:
+            hidden_state_exp = self.qwen_expert.model.norm(hidden_state_exp)
         
-        return hidden_state_vl, hidden_state_exp, None
+        return hidden_state_vl, hidden_state_exp, past_key_values
     
     def custom_set_inputs(
         self, 
@@ -710,10 +719,12 @@ class PaliGemmaWithExpertModel(PreTrainedModel):
         cache_position_exp, 
         position_embeddings_vl,
         position_embeddings_exp,
+        present_key_value=None
         ):
         
         layers = [model.layers[layer_idx] for model in models]
-        
+        expert_hidden = None
+        hidden_states_vl = None
         if inputs_embeds[0] is not None:
             hidden_states_vl = inputs_embeds[0]
             residual_vl = hidden_states_vl
@@ -738,22 +749,6 @@ class PaliGemmaWithExpertModel(PreTrainedModel):
             else:
                 present_key_value.key_cache = self.kv_compress[layer_idx](present_key_value.key_cache)
                 present_key_value.value_cache = self.kv_compress[layer_idx](present_key_value.value_cache)
-            
-            if inputs_embeds[1] is not None:
-                expert_hidden_states = inputs_embeds[1]
-                
-                expert_outputs = self.expert_decoder_forward(
-                    decoder_layer=layers[1],
-                    hidden_states=expert_hidden_states,
-                    attention_mask=casual_mask_exp,
-                    position_ids=position_ids_exp,
-                    past_key_value=present_key_value,
-                    output_attentions=output_attentions,
-                    use_cache=False,
-                    cache_position=cache_position_exp,
-                    position_embeddings=position_embeddings_exp
-                )
-                expert_hidden = expert_outputs[0]
            
             hidden_states_vl = residual_vl + hidden_states_vl
             
@@ -762,8 +757,24 @@ class PaliGemmaWithExpertModel(PreTrainedModel):
             hidden_states_vl = layers[0].mlp(hidden_states_vl)
             hidden_states_vl = residual_vl + hidden_states_vl
         
+        if inputs_embeds[1] is not None:
+            expert_hidden_states = inputs_embeds[1]
+            
+            expert_outputs = self.expert_decoder_forward(
+                decoder_layer=layers[1],
+                hidden_states=expert_hidden_states,
+                attention_mask=casual_mask_exp,
+                position_ids=position_ids_exp,
+                past_key_value=present_key_value,
+                output_attentions=output_attentions,
+                use_cache=False,
+                cache_position=cache_position_exp,
+                position_embeddings=position_embeddings_exp
+            )
+            expert_hidden = expert_outputs[0]
+        
         outputs = [hidden_states_vl, expert_hidden]
-        return outputs
+        return outputs, present_key_value
 
     def expert_forward(
         self,
