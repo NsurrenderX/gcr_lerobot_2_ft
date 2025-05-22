@@ -604,9 +604,8 @@ class PaliGemmaWithExpertModel(PreTrainedModel):
         hidden_states = inputs_embeds
                 
         num_layers = self.num_layers
+        present_key_value = None
         for layer_idx in range(num_layers):
-            if use_cache and fill_kv_cache == False:
-                present_key_value = past_key_values[layer_idx]
             if layer_idx % 7 == 0:
                 hidden_states, present_key_value = checkpoint(
                     self.cross_layer_forward,
